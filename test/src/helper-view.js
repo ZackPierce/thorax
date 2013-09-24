@@ -98,7 +98,7 @@ describe('helper-view', function() {
       expect(_.keys(view.children).length).to.equal(5);
     });
 
-    it('should destroy old children on re-render', function() {
+    it('should release old children on re-render', function() {
       view = new Thorax.View({
         template: Handlebars.compile('{{#test key}}{{/test}}'),
         key: 1
@@ -107,12 +107,12 @@ describe('helper-view', function() {
       expect(spy.callCount).to.equal(1);
       expect(_.keys(view.children).length).to.equal(1);
       var child = _.first(_.values(view.children));
-      this.spy(child, 'destroy');
+      this.spy(child, '_destroy');
 
       view.key = 2;
       view.render();
       expect(spy.callCount).to.equal(2);
-      expect(child.destroy.callCount).to.equal(1);
+      expect(child._destroy.callCount).to.equal(1);
     });
 
     it('id, class and tag passed to helper view', function() {
@@ -132,6 +132,48 @@ describe('helper-view', function() {
       view.render();
       expect(view.$('a').length).to.equal(1);
       expect(view.$('.b').length).to.equal(1);
+    });
+
+    it("should preserve a class template if no block is passed", function() {
+      var ViewClass = Thorax.View.extend({
+        template: Handlebars.compile('hello')
+      });
+      Handlebars.registerViewHelper('test-view-helper', ViewClass, function() {});
+      var view = new Thorax.View({
+        template: Handlebars.compile("{{test-view-helper}}")
+      });
+      view.render();
+      expect(view.$('div').html()).to.equal('hello');
+    });
+
+    it("should preserve view's attributes if view class specified them", function() {
+      var ViewClassWithObjectAttributes = Thorax.View.extend({
+        attributes: {
+          random: 'value'
+        }
+      });
+      Handlebars.registerViewHelper('test-view-helper-attributes-object', ViewClassWithObjectAttributes, function() {});
+      view = new Thorax.View({
+        template: Handlebars.compile('{{test-view-helper-attributes-object}}')
+      });
+      view.render();
+      expect(view.$('[random="value"]').length).to.equal(1);
+    
+      var ViewClassWithObjectAttributes = Thorax.View.extend({
+        attributes: function() {
+          return {
+            random: 'value'
+          };
+        }
+      });
+      Handlebars.registerViewHelper('test-view-helper-attributes-callback', ViewClassWithObjectAttributes, function() {});
+      
+      view = new Thorax.View({
+        template: Handlebars.compile('{{test-view-helper-attributes-callback}}')
+      });
+      view.render();
+      expect(view.$('[random="value"]').length).to.equal(1);
+    
     });
   });
 });

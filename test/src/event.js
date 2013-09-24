@@ -225,6 +225,68 @@ describe('event', function() {
     parent.$el.remove();
   });
 
+  it("on works after el is created", function() {
+    var spy = this.spy();
+    var view = new Thorax.View();
+    view.on('click', spy);
+    view.$el.trigger('click');
+    expect(spy.callCount).to.equal(1);
+    $('body').append(view.el);
+    view.$el.remove();
+  });
+
+  it("on works after data object is set", function() {
+    var spy = this.spy();
+    var view = new Thorax.View({
+      template: function() {return '';},
+      model: new Thorax.Model({
+        key: 'value',
+      })
+    });
+    view.on({model: {event: spy}});
+    view.model.trigger('event');
+    expect(spy.callCount).to.equal(1);
+  });
+
+  it("on works after _ensureElement but before delegateEvents (basically initialize)", function() {
+    // this is useful for mixins for example
+    var spy = this.spy();
+    var TestView = Thorax.View.extend({
+      initialize: function() {
+        this.on({
+          'click button': spy
+        });
+      },
+      template: function() {
+        return '<button>foo</button>';
+      }
+    });
+
+    var view = new TestView();
+    view.render();
+    var el = view.$('button');
+    expect(el.length).to.equal(1);
+    $(document.body).append(view.$el);
+    el.trigger('click');
+    view.$el.remove();
+    expect(spy.callCount).to.equal(1);
+  });
+
+  it('should trigger ready event on layout view', function() {
+    var spy = this.spy(),
+        layoutView = new Thorax.LayoutView(),
+        view = new Thorax.View({
+          events: {
+            ready: spy
+          },
+          template: function() {}
+        });
+    expect(spy.callCount).to.equal(0, 'ready event will trigger via LayoutView');
+    layoutView.appendTo(document.body);
+    layoutView.setView(view);
+    expect(spy.callCount).to.equal(1, 'ready event will trigger via LayoutView');
+  });
+
   it("should trigger ready event on children", function() {
     var spy = this.spy(),
         layoutView = new Thorax.LayoutView(),
@@ -252,7 +314,7 @@ describe('event', function() {
     view._addChild(secondChild);
     expect(secondChildSpy.callCount).to.equal(1, 'adding a child to a view that is ready should immediately trigger');
 
-    var itemViewSpy = this.spy();    
+    var itemViewSpy = this.spy();
     var collectionView = new Thorax.View({
       itemView: Thorax.View.extend({
         events: {
@@ -268,6 +330,7 @@ describe('event', function() {
       ]),
       template: Handlebars.compile('{{collection tag="ul"}}')
     });
+    collectionView.render();
     expect(itemViewSpy.callCount).to.equal(0, 'ready event triggered via collection');
     collectionView.trigger('ready');
     expect(collectionView.$('li').length).to.equal(3, 'ready event triggered via collection');
@@ -293,8 +356,8 @@ describe('event', function() {
       view.trigger('foo');
       expect(spy).to.have.been.calledOnce;
     });
-    it('should cleanup backbone events on destroy', function() {
-      var spy = this.spy()
+    it('should cleanup backbone events on release', function() {
+      var spy = this.spy(),
           view = new Thorax.View({
             events: {
               model: {
@@ -309,12 +372,12 @@ describe('event', function() {
       model.trigger('foo');
       expect(spy).to.have.been.calledOnce;
 
-      view.destroy();
+      view.release();
 
       model.trigger('foo');
       expect(spy).to.have.been.calledOnce;
     });
-    it('should cleanup DOM events on destroy', function() {
+    it('should cleanup DOM events on release', function() {
       var spy = this.spy(),
           view = new Thorax.View({
             events: {
@@ -330,10 +393,49 @@ describe('event', function() {
       $el.find('a').trigger('mousedown');
       expect(spy).to.have.been.calledTwice;
 
-      view.destroy();
+      view.release();
 
       $el.find('a').trigger('mousedown');
       expect(spy).to.have.been.calledTwice;
+    });
+    it('should cleanup listening view events on release', function() {
+      var spy = this.spy(),
+          View = Thorax.View.extend({
+            template: function() {}
+          }),
+          view = new View(),
+          other = new View();
+
+      other.on('foo', spy, view);
+      other.trigger('foo');
+
+      expect(spy)
+          .to.have.been.calledOnce
+          .to.have.been.calledOn(view);
+
+      view.release();
+
+      other.trigger('foo');
+      expect(spy).to.have.been.calledOnce;
+    });
+    it('should cleanup own view events on release', function() {
+      var spy = this.spy(),
+          View = Thorax.View.extend({
+            template: function() {}
+          }),
+          view = new View();
+
+      view.on('foo', spy);
+      view.trigger('foo');
+
+      expect(spy)
+          .to.have.been.calledOnce
+          .to.have.been.calledOn(view);
+
+      view.release();
+
+      view.trigger('foo');
+      expect(spy).to.have.been.calledOnce;
     });
   });
 

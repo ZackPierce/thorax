@@ -1,3 +1,5 @@
+/* global createErrorMessage */
+
 var callMethodAttributeName = 'data-call-method',
     triggerEventAttributeName = 'data-trigger-event';
 
@@ -10,7 +12,7 @@ Handlebars.registerHelper('button', function(method, options) {
       expandTokens = hash['expand-tokens'];
   delete hash['expand-tokens'];
   if (!method && !options.hash.trigger) {
-    throw new Error("button helper must have a method name as the first argument or a 'trigger', or a 'method' attribute specified.");
+    throw new Error(createErrorMessage('button-trigger'));
   }
   normalizeHTMLAttributeOptions(hash);
   hash.tagName = hash.tagName || 'button';
@@ -29,7 +31,7 @@ Handlebars.registerHelper('link', function() {
       expandTokens = hash['expand-tokens'];
   delete hash['expand-tokens'];
   if (!url[0] && url[0] !== '') {
-    throw new Error("link helper requires an href as the first argument or an 'href' attribute");
+    throw new Error(createErrorMessage('link-href'));
   }
   normalizeHTMLAttributeOptions(hash);
   url.push(options);
@@ -44,14 +46,14 @@ Handlebars.registerHelper('link', function() {
 var clickSelector = '[' + callMethodAttributeName + '], [' + triggerEventAttributeName + ']';
 
 function handleClick(event) {
-  var target = $(event.target),
-      view = target.view({helper: false}),
-      methodName = target.attr(callMethodAttributeName),
-      eventName = target.attr(triggerEventAttributeName),
+  var $this = $(this),
+      view = $this.view({helper: false}),
+      methodName = $this.attr(callMethodAttributeName),
+      eventName = $this.attr(triggerEventAttributeName),
       methodResponse = false;
   methodName && (methodResponse = view[methodName].call(view, event));
   eventName && view.trigger(eventName, event);
-  target.tagName === "A" && methodResponse === false && event.preventDefault();
+  this.tagName === 'A' && methodResponse === false && event.preventDefault();
 }
 
 var lastClickHandlerEventName;

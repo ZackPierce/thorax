@@ -1,6 +1,6 @@
-/*global createRegistryWrapper, dataObject, getEventCallback, getValue, modelCidAttributeName, viewCidAttributeName */
+/*global assignView, assignTemplate, createRegistryWrapper, dataObject, getEventCallback, getValue, modelCidAttributeName, viewCidAttributeName */
 var _fetch = Backbone.Collection.prototype.fetch,
-    _reset = Backbone.Collection.prototype.reset,
+    _set = Backbone.Collection.prototype.set,
     _replaceHTML = Thorax.View.prototype._replaceHTML,
     collectionCidAttributeName = 'data-collection-cid',
     collectionEmptyAttributeName = 'data-collection-empty',
@@ -35,9 +35,24 @@ Thorax.Collection = Backbone.Collection.extend({
     };
     return _fetch.apply(this, arguments);
   },
-  reset: function(models, options) {
+  set: function(models, options) {
     this._fetched = !!models;
-    return _reset.call(this, models, options);
+    return _set.call(this, models, options);
+  }
+});
+
+_.extend(Thorax.View.prototype, {
+  getCollectionViews: function(collection) {
+    return _.filter(this.children, function(child) {
+      if (!(child instanceof Thorax.CollectionView)) {
+        return false;
+      }
+
+      return !collection || (child.collection === collection);
+    });
+  },
+  updateFilter: function(collection) {
+    _.invoke(this.getCollectionViews(collection), 'updateFilter');
   }
 });
 
@@ -48,10 +63,11 @@ dataObject('collection', {
   set: 'setCollection',
   bindCallback: onSetCollection,
   defaultOptions: {
-    render: true,
+    render: undefined,    // Default to deferred rendering
     fetch: true,
     success: false,
-    errors: true
+    invalid: true,
+    change: true          // Wether or not to re-render on model:change
   },
   change: onCollectionReset,
   $el: 'getCollectionElement',
@@ -64,7 +80,7 @@ Thorax.CollectionView = Thorax.View.extend({
 
   // preserve collection element if it was not created with {{collection}} helper
   _replaceHTML: function(html) {
-    if (this.collection && this._objectOptionsByCid[this.collection.cid] && this._renderCount) {
+    if (this.collection && this.getObjectOptions(this.collection) && this._renderCount) {
       var element;
       var oldCollectionElement = this.getCollectionElement();
       element = _replaceHTML.call(this, html);
@@ -73,6 +89,15 @@ Thorax.CollectionView = Thorax.View.extend({
       }
     } else {
       return _replaceHTML.call(this, html);
+    }
+  },
+
+  render: function() {
+    var shouldRender = this.shouldRender();
+
+    Thorax.View.prototype.render.apply(this, arguments);
+    if (!shouldRender) {
+      this.renderCollection();
     }
   },
 
@@ -99,18 +124,23 @@ Thorax.CollectionView = Thorax.View.extend({
       index = index || this.collection.indexOf(model) || 0;
       itemView = this.renderItem(model, index);
     }
+
     if (itemView) {
-      itemView.cid && this._addChild(itemView);
+      if (itemView.cid) {
+        itemView.ensureRendered();
+        this._addChild(itemView);
+      }
+
       //if the renderer's output wasn't contained in a tag, wrap it in a div
       //plain text, or a mixture of top level text nodes and element nodes
       //will get wrapped
       if (_.isString(itemView) && !itemView.match(/^\s*</m)) {
         itemView = '<div>' + itemView + '</div>';
       }
-      var itemElement = itemView.el ? [itemView.el] : _.filter($($.trim(itemView)), function(node) {
+      var itemElement = itemView.$el || $($.trim(itemView)).filter(function() {
         //filter out top level whitespace nodes
         // TODO : Revaluate the cheerio implementation for type vs. nodeType
-        return node.nodeType === ELEMENT_NODE_TYPE || node.type === 'tag';
+        return this.nodeType === ELEMENT_NODE_TYPE || this.type === 'tag';
       });
 
       var $itemElement = $(itemElement),
@@ -130,8 +160,12 @@ Thorax.CollectionView = Thorax.View.extend({
         el.setAttribute(modelCidAttributeName, model.cid);
       });
 
-      !options.silent && this.trigger('rendered:item', this, this.collection, model, itemElement, index);
-      options.filter && applyItemVisiblityFilter.call(this, model);
+      if (!options.silent) {
+        this.trigger('rendered:item', this, this.collection, model, itemElement, index);
+      }
+      if (options.filter) {
+        applyItemVisiblityFilter.call(this, model);
+      }
     }
     return itemView;
   },
@@ -165,7 +199,6 @@ Thorax.CollectionView = Thorax.View.extend({
         child = this.children[viewCid];
     if (child) {
       this._removeChild(child);
-      child.destroy();
     }
     return true;
   },
@@ -187,6 +220,11 @@ Thorax.CollectionView = Thorax.View.extend({
   },
   emptyClass: 'empty',
   renderEmpty: function() {
+    if (!this.emptyView) {
+      assignView.call(this, 'emptyView', {
+        extension: '-empty'
+      });
+    }
     if (!this.emptyTemplate && !this.emptyView) {
       assignTemplate.call(this, 'emptyTemplate', {
         extension: '-empty',
@@ -206,6 +244,12 @@ Thorax.CollectionView = Thorax.View.extend({
     }
   },
   renderItem: function(model, i) {
+    if (!this.itemView) {
+      assignView.call(this, 'itemView', {
+        extension: '-item',
+        required: false
+      });
+    }
     if (!this.itemTemplate && !this.itemView) {
       assignTemplate.call(this, 'itemTemplate', {
         extension: '-item',
@@ -221,9 +265,7 @@ Thorax.CollectionView = Thorax.View.extend({
       if (this.itemTemplate) {
         viewOptions.template = this.itemTemplate;
       }
-      var view = Thorax.Util.getViewInstance(this.itemView, viewOptions);
-      view.ensureRendered();
-      return view;
+      return Thorax.Util.getViewInstance(this.itemView, viewOptions);
     } else {
       return this.renderTemplate(this.itemTemplate, this.itemContext(model, i));
     }
@@ -244,6 +286,10 @@ Thorax.CollectionView = Thorax.View.extend({
   getCollectionElement: function() {
     var element = this.$(this._collectionSelector);
     return element.length === 0 ? this.$el : element;
+  },
+
+  updateFilter: function() {
+    applyVisibilityFilter.call(this);
   }
 });
 
@@ -251,11 +297,11 @@ Thorax.CollectionView.on({
   collection: {
     reset: onCollectionReset,
     sort: onCollectionReset,
-    filter: function() {
-      applyVisibilityFilter.call(this);
-    },
     change: function(model) {
-      this.updateItem(model);
+      var options = this.getObjectOptions(this.collection);
+      if (options && options.change) {
+        this.updateItem(model);
+      }
       applyItemVisiblityFilter.call(this, model);
     },
     add: function(model) {
@@ -276,19 +322,21 @@ Thorax.CollectionView.on({
 
 Thorax.View.on({
   collection: {
-    error: function(collection, message) {
-      if (this._objectOptionsByCid[collection.cid].errors) {
-        this.trigger('error', message, collection);
+    invalid: function(collection, message) {
+      if (this.getObjectOptions(collection).invalid) {
+        this.trigger('invalid', message, collection);
       }
+    },
+    error: function(collection, resp, options) {
+      this.trigger('error', resp, collection);
     }
   }
 });
 
 function onCollectionReset(collection) {
-  var options = collection && this._objectOptionsByCid[collection.cid];
-  // we would want to still render in the case that the
-  // collection has transitioned to being falsy
-  if (!collection || (options && options.render)) {
+  // Undefined to force conditional render
+  var options = this.getObjectOptions(collection) || undefined;
+  if (this.shouldRender(options && options.render)) {
     this.renderCollection && this.renderCollection();
   }
 }
@@ -296,8 +344,13 @@ function onCollectionReset(collection) {
 // Even if the view is not a CollectionView
 // ensureRendered() to provide similar behavior
 // to a model
-function onSetCollection() {
-  this.ensureRendered();
+function onSetCollection(collection) {
+  // Undefined to force conditional render
+  var options = this.getObjectOptions(collection) || undefined;
+  if (this.shouldRender(options && options.render)) {
+    // Ensure that something is there if we are going to render the collection.
+    this.ensureRendered();
+  }
 }
 
 function applyVisibilityFilter() {

@@ -1,3 +1,5 @@
+/* global createErrorMessage */
+
 Thorax.CollectionHelperView = Thorax.CollectionView.extend({
   // Forward render events to the parent
   events: {
@@ -6,16 +8,22 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
     'rendered:empty': forwardRenderEvent('rendered:empty')
   },
 
+  // Thorax.CollectionView allows a collectionSelector
+  // to be specified, disallow in a collection helper
+  // as it will cause problems when neseted
+  getCollectionElement: function() {
+    return this.$el;
+  },
+
   constructor: function(options) {
-    _.each(collectionOptionNames, function(viewAttributeName, helperOptionName) {
-      if (options.options[helperOptionName]) {
-        var value = options.options[helperOptionName];
-        if (viewAttributeName === 'itemTemplate' || viewAttributeName === 'emptyTemplate') {
-          value = Thorax.Util.getTemplate(value);
-        }
-        options[viewAttributeName] = value;
-      }
-    });
+    // need to fetch templates if template name was passed
+    if (options.options['item-template']) {
+      options.itemTemplate = Thorax.Util.getTemplate(options.options['item-template']);
+    }
+    if (options.options['empty-template']) {
+      options.emptyTemplate = Thorax.Util.getTemplate(options.options['empty-template']);
+    }
+
     // Handlebars.VM.noop is passed in the handlebars options object as
     // a default for fn and inverse, if a block was present. Need to
     // check to ensure we don't pick the empty / null block up.
@@ -27,12 +35,35 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
       options.emptyTemplate = options.inverse;
       options.inverse = Handlebars.VM.noop;
     }
+
+    var shouldBindItemContext = _.isFunction(options.itemContext),
+        shouldBindItemFilter = _.isFunction(options.itemFilter);
+
     var response = Thorax.HelperView.call(this, options);
+    
+    if (shouldBindItemContext) {
+      this.itemContext = _.bind(this.itemContext, this.parent);
+    } else if (_.isString(this.itemContext)) {
+      this.itemContext = _.bind(this.parent[this.itemContext], this.parent);
+    }
+
+    if (shouldBindItemFilter) {
+      this.itemFilter = _.bind(this.itemFilter, this.parent);
+    } else if (_.isString(this.itemFilter)) {
+      this.itemFilter = _.bind(this.parent[this.itemFilter], this.parent);
+    }
+
     if (this.parent.name) {
-      if (!this.emptyTemplate) {
+      if (!this.emptyView && !this.parent.renderEmpty) {
+        this.emptyView = Thorax.Util.getViewClass(this.parent.name + '-empty', true);
+      }
+      if (!this.emptyTemplate && !this.parent.renderEmpty) {
         this.emptyTemplate = Thorax.Util.getTemplate(this.parent.name + '-empty', true);
       }
-      if (!this.itemTemplate) {
+      if (!this.itemView && !this.parent.renderItem) {
+        this.itemView = Thorax.Util.getViewClass(this.parent.name + '-item', true);
+      }
+      if (!this.itemTemplate && !this.parent.renderItem) {
         // item template must be present if an itemView is not
         this.itemTemplate = Thorax.Util.getTemplate(this.parent.name + '-item', !!this.itemView);
       }
@@ -47,10 +78,10 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
 
     var self = this;
     _.each(['itemFilter', 'itemContext', 'renderItem', 'renderEmpty'], function(propertyName) {
-      if (self.parent[propertyName] && !this[propertyName]) {
+      if (self.parent[propertyName]) {
         self[propertyName] = function() {
           return self.parent[propertyName].apply(self.parent, arguments);
-      };
+        };
       }
     });
   }
@@ -58,7 +89,10 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
 
 _.extend(Thorax.CollectionHelperView.prototype, helperViewPrototype);
 
-var collectionOptionNames = {
+
+Thorax.CollectionHelperView.attributeWhiteList = {
+  'item-context': 'itemContext',
+  'item-filter': 'itemFilter',
   'item-template': 'itemTemplate',
   'empty-template': 'emptyTemplate',
   'item-view': 'itemView',
@@ -71,7 +105,7 @@ function forwardRenderEvent(eventName) {
     var args = _.toArray(arguments);
     args.unshift(eventName);
     this.parent.trigger.apply(this.parent, args);
-  }
+  };
 }
 
 var forwardableProperties = [
@@ -111,7 +145,7 @@ Handlebars.registerViewHelper('collection', Thorax.CollectionHelperView, functio
 
 Handlebars.registerHelper('collection-element', function(options) {
   if (!getOptionsData(options).view.renderCollection) {
-    throw new Error("collection-element helper must be declared inside of a CollectionView");
+    throw new Error(createErrorMessage('collection-element-helper'));
   }
   var hash = options.hash;
   normalizeHTMLAttributeOptions(hash);

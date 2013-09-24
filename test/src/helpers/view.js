@@ -5,21 +5,48 @@ describe('view helper', function() {
     }).to['throw']();
   });
 
+  it("throws an error when any hash arguments are passed on an instance", function() {
+    var view = new Thorax.View({
+      instance: new Thorax.View({
+        template: Handlebars.compile('')
+      }),
+      template: Handlebars.compile('{{view instance tag="span" key="value"}}')
+    });
+    expect(function() {
+      view.render();
+    }).to['throw']();
+  });
+
+  it("should allow hash arguments when a view class name is passed", function() {
+    Thorax.View.extend({
+      tagName: 'p',
+      name: 'HashArgsClassTest',
+      template: Handlebars.compile('<span>{{key}}</span>')
+    });
+    var view = new Thorax.View({
+      template: Handlebars.compile('<div>{{view "HashArgsClassTest" key="value"}}</div>')
+    });
+    view.render();
+    expect(view.$('span').html()).to.equal('value');
+  });
+
   it('should use the registry to lookup view clases', function() {
     //test nested
     Thorax.Views.Outer = {
       Inner: Thorax.View.extend({
+        tagName: 'span',
         template: function() { return 'inner'; }
       }),
       More: {
         Nested: Thorax.View.extend({
+          tagName: 'span',
           template: function() { return 'nested'; }
         })
       }
     };
 
     var view = new Thorax.View({
-      template: Handlebars.compile('<p>{{view "Outer.Inner" tag="span"}}</p><div>{{view "Outer.More.Nested" tag="span"}}</div>')
+      template: Handlebars.compile('<p>{{view "Outer.Inner"}}</p><div>{{view "Outer.More.Nested"}}</div>')
     });
     view.render();
     expect(view.$('p > span').html()).to.equal('inner', 'test nested registryGet');
@@ -251,5 +278,56 @@ describe('view helper', function() {
       return child._helperName === 'collection';
     });
     expect(emptyView.parent).to.equal(view.child);
+  });
+
+  it('ensure manually initialized child view is not destroyed if it goes out of scope in template', function() {
+    var child = new Thorax.View({
+      template: Handlebars.compile('<span>content</span>')
+    });
+    child.retain();
+
+    var parent = new Thorax.View({
+      child: child,
+      showChild: true,
+      template: Handlebars.compile('{{#showChild}}{{view child}}{{/showChild}}')
+    });
+    parent.render();
+    expect(parent.$('span').length).to.equal(1);
+
+    parent.showChild = false;
+    parent.render();
+    expect(parent.$('span').length).to.equal(0);
+
+    parent.showChild = true;
+    parent.render();
+    expect(parent.$('span').length).to.equal(1);
+  });
+
+  it('ensure automatically initialized child view is destroyed if it goes out of scope in template', function() {
+    var spy = this.spy();
+    var ScopedChildTestView = Thorax.View.extend({
+      name: 'scoped-child-test',
+      events: {
+        rendered: spy
+      },
+      template: Handlebars.compile('<span>content</span>')
+    });
+    var parent = new Thorax.View({
+      showChild: true,
+      template: Handlebars.compile('{{#showChild}}{{view "scoped-child-test"}}{{/showChild}}')
+    });
+    parent.render();
+    expect(parent.$('span').length).to.equal(1);
+    expect(spy.callCount).to.equal(1);
+
+    parent.showChild = false;
+    parent.render();
+    expect(parent.$('span').length).to.equal(0);
+
+    parent.showChild = true;
+    parent.render();
+    expect(parent.$('span').length).to.equal(1);
+    // should be a new instance
+    expect(spy.callCount).to.equal(2);
   });
 });

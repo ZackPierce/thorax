@@ -1,3 +1,4 @@
+/*global getOptionsData, normalizeHTMLAttributeOptions, createErrorMessage */
 var layoutCidAttributeName = 'data-layout-cid';
 
 Thorax.LayoutView = Thorax.View.extend({
@@ -15,43 +16,52 @@ Thorax.LayoutView = Thorax.View.extend({
   },
   setView: function(view, options) {
     options = _.extend({
-      scroll: true,
-      destroy: true
+      scroll: true
     }, options || {});
     if (_.isString(view)) {
       view = new (Thorax.Util.registryGet(Thorax, 'Views', view, false))();
     }
     this.ensureRendered();
-    var oldView = this._view;
+    var oldView = this._view, append, remove, complete;
     if (view === oldView) {
       return false;
     }
-    if (options.destroy && view) {
-      view._shouldDestroyOnNextSetView = true;
-    }
-
     this.trigger('change:view:start', view, oldView, options);
-
-    if (oldView) {
-      this._removeChild(oldView);
-      oldView.$el.remove();
-      triggerLifecycleEvent.call(oldView, 'deactivated', options);
-      if (oldView._shouldDestroyOnNextSetView) {
-        oldView.destroy();
+    
+    remove = _.bind(function() {
+      if (oldView) {
+        oldView.$el.remove();
+        triggerLifecycleEvent.call(oldView, 'deactivated', options);
+        this._removeChild(oldView);
       }
-    }
+    }, this);
 
-    if (view) {
-      triggerLifecycleEvent.call(this, 'activated', options);
-      view.trigger('activated', options);
-      this._addChild(view);
-      this._view = view;
-      this._view.appendTo(getLayoutViewsTargetElement.call(this));
+    append = _.bind(function() {
+      if (view) {
+        view.ensureRendered();
+        triggerLifecycleEvent.call(this, 'activated', options);
+        view.trigger('activated', options);
+        this._view = view;
+        var targetElement = getLayoutViewsTargetElement.call(this);
+        this._view.appendTo(targetElement);
+        this._addChild(view);
+      } else {
+        this._view = undefined;
+      }
+    }, this);
+
+    complete = _.bind(function() {
+      this.trigger('change:view:end', view, oldView, options);
+    }, this);
+
+    if (!options.transition) {
+      remove();
+      append();
+      complete();
     } else {
-      this._view = undefined;
+      options.transition(view, oldView, append, remove, complete);
     }
 
-    this.trigger('change:view:end', view, oldView, options);
     return view;
   },
 
@@ -64,7 +74,7 @@ Handlebars.registerHelper('layout-element', function(options) {
   var view = getOptionsData(options).view;
   // duck type check for LayoutView
   if (!view.getView) {
-    throw new Error('layout-element must be used within a LayoutView');
+    throw new Error(createErrorMessage('layout-element-helper'));
   }
   options.hash[layoutCidAttributeName] = view.cid;
   normalizeHTMLAttributeOptions(options.hash);

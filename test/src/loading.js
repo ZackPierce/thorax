@@ -9,6 +9,61 @@ describe('loading', function() {
 
   Thorax.setRootObject(Application);
 
+  describe('fetch', function() {
+    var colData = [{id: 1, name: "foo"}, {id: 2, name: "bar"}],
+        C = Thorax.Collection.extend({
+          url: 'foo'
+        }),
+        c, resetSpy, setSpy, setCallback, resetCallback, resetEventSpy;
+    beforeEach(function() {
+      c = new C();
+      resetSpy = this.spy(c, 'reset'),
+      setSpy = this.spy(c, 'set'),
+      setCallback = this.spy(),
+      resetCallback = this.spy(),
+      resetEventSpy = this.spy();
+      c.on('reset', resetEventSpy);
+    });
+
+    it('should throw an error with mixed fetch', function() {
+      Thorax.loadHandler.allowMixedFetch=false;
+      var exc;
+      try {
+        c.fetch({reset: true, success: resetCallback});
+        c.fetch({reset: false, success: setCallback});
+      } catch (e) {
+        exc = e;
+      }
+      expect(exc).to.not.eql(undefined);
+    });
+    it('views should emit load events', function() {
+      var startSpy = this.spy(),
+          endSpy = this.spy();
+
+      c.on('load:start', startSpy);
+      c.on('load:end', endSpy);
+
+      c.fetch();
+      this.requests[0].respond(200, {}, '[]');
+
+      expect(startSpy).to.have.been.calledOnce;
+      expect(endSpy).to.have.been.calledOnce;
+    });
+    it('views should not emit load events if triggered flag is set', function() {
+      var startSpy = this.spy(),
+          endSpy = this.spy();
+
+      c.on('load:start', startSpy);
+      c.on('load:end', endSpy);
+
+      c.fetch({loadTriggered: true});
+      this.requests[0].respond(200, {}, '[]');
+
+      expect(startSpy).to.not.have.been.called;
+      expect(endSpy).to.not.have.been.called;
+    });
+  });
+
   describe('load events', function() {
     it('views should see load start from model', function() {
       var spy = this.spy(),
@@ -42,14 +97,14 @@ describe('loading', function() {
 
       expect($(view.el).hasClass('loading')).to.be['true'];
     });
-    it('views should not see load start after destroy', function() {
+    it('views should not see load start after release', function() {
       var spy = this.spy(),
           model = new Thorax.Model({url: 'foo'}),
           view = new Thorax.View({name: 'food', render: function() {}, model: model});
       view.on('load:start', spy);
 
       expect($(view.el).hasClass('loading')).to.be['false'];
-      view.destroy();
+      view.release();
 
       model.loadStart();
 
@@ -91,7 +146,7 @@ describe('loading', function() {
       expect(spy).to.have.been.calledOnce;
       expect($(view.el).hasClass('loading')).to.be['false'];
     });
-    it('views should see load end after destroy', function() {
+    it('views should see load end after release', function() {
       var spy = this.spy(),
           model = new Thorax.Model({url: 'foo'}),
           view = new Thorax.View({name: 'food', template: function() {}, model: model}),
@@ -103,7 +158,7 @@ describe('loading', function() {
       this.clock.tick(1000);
 
       expect($(view.el).hasClass('loading')).to.be['true'];
-      view.destroy();
+      view.release();
 
       model.loadEnd();
       this.clock.tick(1000);
@@ -166,11 +221,11 @@ describe('loading', function() {
 
       expect(this.endSpy).to.have.been.calledOnce;
     });
-    it('root should see load end after destroy', function() {
+    it('root should see load end after release', function() {
       this.model.loadStart();
       this.clock.tick(1000);
 
-      this.view.destroy();
+      this.view.release();
 
       this.model.loadEnd();
       this.clock.tick(1000);
@@ -219,6 +274,30 @@ describe('loading', function() {
       this.clock.tick(1000);
 
       expect(this.endSpy).to.have.been.calledOnce;
+    });
+    it('load should forward load events even if object is currently loading joe', function() {
+      var callback = this.spy(),
+          appLoadingStart = this.spy(),
+          loadingStart = this.spy(),
+          loadingEnd = this.spy(),
+          Model = Thorax.Model.extend({url: 'foo'}),
+          model = new Model();
+
+      Thorax.setRootObject(Application);
+      Application.on('load:start', Thorax.loadHandler(loadingStart, loadingEnd));
+      Application.on('load:start', appLoadingStart);
+
+      // simulate loading
+      model.fetch();
+      expect(model.isLoading()).to.eql(true);
+      model.load(callback);
+      this.clock.tick(1000);
+      expect(appLoadingStart).to.have.been.calledOnce;
+      expect(loadingStart).to.have.been.calledOnce;
+      this.requests[0].respond(200, {}, '{}');
+      expect(callback).to.have.been.calledOnce;
+      this.clock.tick(1000);
+      expect(loadingEnd).to.have.been.calledOnce;
     });
   });
 
@@ -634,7 +713,7 @@ describe('loading', function() {
           failback,
           fragment = "foo",
           _getFragment = Backbone.history.getFragment,
-          _Router = Thorax.Router.extend({}),
+          _Router = Backbone.Router.extend({}),
           router = new _Router();
 
       Backbone.history.getFragment = function() {
@@ -645,7 +724,7 @@ describe('loading', function() {
       function reset() {
         callback = self.spy();
         failback = self.spy();
-        return router.bindToRoute(callback, failback);
+        return Thorax.Util.bindToRoute(callback, failback);
       }
 
       var func = reset();
@@ -784,8 +863,7 @@ describe('loading', function() {
       this.clock.tick(1000);
 
       var collectionView = _.values(view.children)[0],
-          collectionCid = collectionView.collection.cid,
-          options = collectionView._objectOptionsByCid[collectionCid];
+          options = collectionView.getObjectOptions(collectionView.collection);
       expect(options.ignoreErrors).to.equal(true);
       expect(options.background).to.equal(true);
       expect(view.$el.hasClass('loading')).to.be['true'];

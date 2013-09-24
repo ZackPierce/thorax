@@ -1,4 +1,4 @@
-/*global createInheritVars, inheritVars, objectEvents, walkInheritTree */
+/*global createInheritVars, inheritVars, listenTo, objectEvents, walkInheritTree */
 // Save a copy of the _on method to call as a $super method
 var _on = Thorax.View.prototype.on;
 
@@ -60,7 +60,7 @@ _.extend(Thorax.View.prototype, {
       //accept on("click a", callback, context)
       _.each((_.isArray(callback) ? callback : [callback]), function(callback) {
         var params = eventParamsFromEventItem.call(this, eventName, callback, context || this);
-        if (params.type === 'DOM') {
+        if (params.type === 'DOM' && !this._eventsDelegated) {
           //will call _addEvent during delegateEvents()
           if (!this._eventsToDelegate) {
             this._eventsToDelegate = [];
@@ -83,6 +83,7 @@ _.extend(Thorax.View.prototype, {
       this.on(events);
     }
     this._eventsToDelegate && _.each(this._eventsToDelegate, this._addEvent, this);
+    this._eventsDelegated = true;
   },
   //params may contain:
   //- name
@@ -91,13 +92,22 @@ _.extend(Thorax.View.prototype, {
   //- type "view" || "DOM"
   //- handler
   _addEvent: function(params) {
+    // If this is recursvie due to listenTo delegate below then pass through to super class
+    if (params.handler._thoraxBind) {
+      return _on.call(this, params.name, params.handler, params.context || this);
+    }
+
+    var boundHandler = bindEventHandler.call(this, params.type + '-event:', params);
+
     if (params.type === 'view') {
-      _.each(params.name.split(/\s+/), function(name) {
-        // Must pass context here so stopListening will clean up our junk
-        _on.call(this, name, bindEventHandler.call(this, 'view-event:', params), params.context || this);
-      }, this);
+      // If we have our context set to an outside view then listen rather than directly bind so
+      // we can cleanup properly.
+      if (params.context && params.context !== this && params.context instanceof Thorax.View) {
+        listenTo(params.context, this, params.name, boundHandler, params.context);
+      } else {
+        _on.call(this, params.name, boundHandler, params.context || this);
+      }
     } else {
-      var boundHandler = bindEventHandler.call(this, 'dom-event:', params);
       if (!params.nested) {
         boundHandler = containHandlerToCurentView(boundHandler, this.cid);
       }
@@ -112,6 +122,8 @@ _.extend(Thorax.View.prototype, {
   }
 });
 
+Thorax.View.prototype.bind = Thorax.View.prototype.on;
+
 // When view is ready trigger ready event on all
 // children that are present, then register an
 // event that will trigger ready on new children
@@ -120,7 +132,7 @@ Thorax.View.on('ready', function(options) {
   if (!this._isReady) {
     this._isReady = true;
     function triggerReadyOnChild(child) {
-      child.trigger('ready', options);
+      child._isReady || child.trigger('ready', options);
     }
     _.each(this.children, triggerReadyOnChild);
     this.on('child', triggerReadyOnChild);
@@ -177,6 +189,7 @@ function bindEventHandler(eventName, params) {
   // Backbone will delegate to _callback in off calls so we should still be able to support
   // calling off on specific handlers.
   ret._callback = method;
+  ret._thoraxBind = true;
   return ret;
 }
 

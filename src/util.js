@@ -1,4 +1,8 @@
 /*global createRegistryWrapper:true, cloneEvents: true */
+function createErrorMessage(code) {
+  return 'Error "' + code + '". For more information visit http://thoraxjs.org/error-codes.html' + '#' + code;
+}
+
 function createRegistryWrapper(klass, hash) {
   var $super = klass.extend;
   klass.extend = function() {
@@ -25,6 +29,25 @@ function registryGet(object, type, name, ignoreErrors) {
     throw new Error(type + ': ' + name + ' does not exist.');
   } else {
     return value;
+  }
+}
+
+function assignView(attributeName, options) {
+  var ViewClass;
+  // if attribute is the name of view to fetch
+  if (_.isString(this[attributeName])) {
+    ViewClass = Thorax.Util.getViewClass(this[attributeName], true);
+  // else try and fetch the view based on the name
+  } else if (this.name && !_.isFunction(this[attributeName])) {
+    ViewClass = Thorax.Util.getViewClass(this.name + (options.extension || ''), true);
+  }
+  // if we found something, assign it
+  if (ViewClass && !_.isFunction(this[attributeName])) {
+    this[attributeName] = ViewClass;
+  }
+  // if nothing was found and it's required, throw
+  if (options.required && !_.isFunction(this[attributeName])) {
+    throw new Error('View ' + (this.name || this.cid) + ' requires: ' + attributeName);
   }
 }
 
@@ -111,33 +134,67 @@ function objectEvents(target, eventName, callback, context) {
   if (_.isObject(callback)) {
     var spec = inheritVars[eventName];
     if (spec && spec.event) {
-      addEvents(target['_' + eventName + 'Events'], callback, context);
+      if (target && target.listenTo && target[eventName] && target[eventName].cid) {
+        addEvents(target, callback, context, eventName);
+      } else {
+        addEvents(target['_' + eventName + 'Events'], callback, context);
+      }
       return true;
     }
   }
 }
-function addEvents(target, source, context) {
+// internal listenTo function will error on destroyed
+// race condition
+function listenTo(object, target, eventName, callback, context) {
+  // getEventCallback will resolve if it is a string or a method
+  // and return a method
+  var callbackMethod = getEventCallback(callback, object),
+      destroyedCount = 0;
+
+  function eventHandler() {
+    if (object.el) {
+      callbackMethod.apply(context, arguments);
+    } else {
+      // If our event handler is removed by destroy while another event is processing then we
+      // we might see one latent event percolate through due to caching in the event loop. If we
+      // see multiple events this is a concern and a sign that something was not cleaned properly.
+      if (destroyedCount) {
+        throw new Error('destroyed-event:' + object.name + ':' + eventName);
+      }
+      destroyedCount++;
+    }
+  }
+  eventHandler._callback = callbackMethod._callback || callbackMethod;
+  eventHandler._thoraxBind = true;
+  object.listenTo(target, eventName, eventHandler);
+}
+
+function addEvents(target, source, context, listenToObject) {
+  function addEvent(callback, eventName) {
+    if (listenToObject) {
+      listenTo(target, target[listenToObject], eventName, callback, context || target);
+    } else {
+      target.push([eventName, callback, context]);
+    }
+  }
+
   _.each(source, function(callback, eventName) {
     if (_.isArray(callback)) {
       _.each(callback, function(cb) {
-        target.push([eventName, cb, context]);
+        addEvent(cb, eventName);
       });
     } else {
-      target.push([eventName, callback, context]);
+      addEvent(callback, eventName);
     }
   });
 }
 
 function getOptionsData(options) {
   if (!options || !options.data) {
-    throw new Error('Handlebars template compiled without data, use: Handlebars.compile(template, {data: true})');
+    throw new Error(createErrorMessage('handlebars-no-data'));
   }
   return options.data;
 }
-
-// These whitelisted attributes will be the only ones passed
-// from the options hash to Thorax.Util.tag
-var htmlAttributesToCopy = ['id', 'className', 'tagName'];
 
 // In helpers "tagName" or "tag" may be specified, as well
 // as "class" or "className". Normalize to "tagName" and
@@ -158,14 +215,17 @@ function normalizeHTMLAttributeOptions(options) {
 
 Thorax.Util = {
   getViewInstance: function(name, attributes) {
-    attributes = attributes || {};
+    var ViewClass = Thorax.Util.getViewClass(name, true);
+    return ViewClass ? new ViewClass(attributes || {}) : name;
+  },
+
+  getViewClass: function(name, ignoreErrors) {
     if (_.isString(name)) {
-      var Klass = registryGet(Thorax, 'Views', name, false);
-      return Klass.cid ? _.extend(Klass, attributes || {}) : new Klass(attributes);
+      return registryGet(Thorax, 'Views', name, ignoreErrors);
     } else if (_.isFunction(name)) {
-      return new name(attributes);
-    } else {
       return name;
+    } else {
+      return false;
     }
   },
 

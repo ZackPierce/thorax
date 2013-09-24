@@ -167,6 +167,24 @@ describe('core', function() {
     view.$el.remove();
   });
 
+  it('should destroy scoped retain on owner destroy', function() {
+    var owner = new Thorax.View(),
+        view = new Thorax.View(),
+        ownerDestroy = this.spy(),
+        viewDestroy = this.spy();
+
+    owner.on('destroyed', ownerDestroy);
+    view.on('destroyed', viewDestroy);
+
+    view.retain(owner);
+    expect(view._referenceCount).to.equal(1);
+
+    owner.release();
+    expect(ownerDestroy).to.have.been.calledOnce;
+    expect(viewDestroy).to.have.been.calledOnce;
+    expect(view._referenceCount).to.equal(0);
+  });
+
   describe('context', function() {
     it("may be an object", function() {
       var view = new (Thorax.View.extend({
@@ -221,9 +239,23 @@ describe('core', function() {
         }),
         template: Handlebars.compile('{{modifyObject a}}{{modifyObject b}}')
       });
+      view.render();
       expect(view.a.mutated).to.be['undefined'];
       expect(view.model.attributes.b.mutated).to.be['undefined'];
       expect(view.html()).to.equal('ab');
+    });
+
+    it("template does not expose template cid", function() {
+      var view = new Thorax.View({
+        template: Handlebars.compile("{{cid}}")
+      });
+      view.render();
+      expect(view.html()).to.contain('view');
+      view = new Thorax.View({
+        template: Handlebars.compile("{{@cid}}")
+      });
+      view.render();
+      expect(view.html()).to.contain('t');
     });
   });
 });

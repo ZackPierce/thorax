@@ -1,4 +1,4 @@
-/*global collectionOptionNames, inheritVars */
+/*global collectionOptionNames, inheritVars, createErrorMessage */
 
 var loadStart = 'load:start',
     loadEnd = 'load:end',
@@ -32,8 +32,13 @@ Thorax.loadHandler = function(start, end, context) {
         self._loadingTimeoutDuration : Thorax.View.prototype._loadingTimeoutDuration;
       loadInfo.timeout = setTimeout(function() {
           try {
-            loadInfo.run = true;
-            start.call(self, loadInfo.message, loadInfo.background, loadInfo);
+            // We have a slight race condtion in here where the end event may have occurred
+            // but the end timeout has not executed. Rather than killing a cumulative timeout
+            // immediately we'll protect from that case here
+            if (loadInfo.events.length) {
+              loadInfo.run = true;
+              start.call(self, loadInfo.message, loadInfo.background, loadInfo);
+            }
           } catch (e) {
             Thorax.onException('loadStart', e);
           }
@@ -96,7 +101,7 @@ Thorax.loadHandler = function(start, end, context) {
             if (!events.length) {
               if (loadInfo.run) {
                 // Emit the end behavior, but only if there is a paired start
-                end.call(self, loadInfo.background, loadInfo);
+                end && end.call(self, loadInfo.background, loadInfo);
                 loadInfo.trigger(loadEnd, loadInfo);
               }
 
@@ -195,7 +200,7 @@ Thorax.mixinLoadableEvents = function(target, useParent) {
       that.trigger(loadStart, message, background, that);
     },
     loadEnd: function() {
-      this._loadCount--
+      this._loadCount--;
 
       var that = useParent ? this.parent : this;
       that.trigger(loadEnd, that);
@@ -300,6 +305,13 @@ function fetchQueue(options, $super) {
     // WARN: Should ensure that loaders are protected from out of band data
     //    when using this option
     this.fetchQueue = undefined;
+  } else if (this.fetchQueue) {
+    // concurrent set/reset fetch events are not advised
+    var reset = (this.fetchQueue[0] || {}).reset;
+    if (reset !== options.reset) {
+      // fetch with concurrent set & reset not allowed
+      throw new Error(createErrorMessage('mixed-fetch'));
+    }
   }
 
   if (!this.fetchQueue) {
@@ -354,15 +366,29 @@ _.each(klasses, function(DataClass) {
 
     fetch: function(options) {
       options = options || {};
+      if (DataClass === Thorax.Collection) {
+        if (!_.find(['reset', 'remove', 'add', 'update'], function(key) { return !_.isUndefined(options[key]); })) {
+          // use backbone < 1.0 behavior to allow triggering of reset events
+          options.reset = true;
+        }
+      }
 
-      var self = this,
-          complete = options.complete;
+      if (!options.loadTriggered) {
+        var self = this;
 
-      options.complete = function() {
-        complete && complete.apply(this, arguments);
-        self.loadEnd();
-      };
-      self.loadStart(undefined, options.background);
+        function endWrapper(method) {
+          var $super = options[method];
+          options[method] = function() {
+            self.loadEnd();
+            $super && $super.apply(this, arguments);
+          };
+        }
+
+        endWrapper('success');
+        endWrapper('error');
+        self.loadStart(undefined, options.background);
+      }
+
       return fetchQueue.call(this, options || {}, $fetch);
     },
 
@@ -376,7 +402,12 @@ _.each(klasses, function(DataClass) {
       if (!options.background && !this.isPopulated() && rootObject) {
         // Make sure that the global scope sees the proper load events here
         // if we are loading in standalone mode
-        Thorax.forwardLoadEvents(this, rootObject, true);
+        if (this.isLoading()) {
+          // trigger directly because load:start has already been triggered
+          rootObject.trigger(loadStart, options.message, options.background, this);
+        } else {
+          Thorax.forwardLoadEvents(this, rootObject, true);
+        }
       }
 
       loadData.call(this, callback, failback, options);
@@ -385,10 +416,6 @@ _.each(klasses, function(DataClass) {
 });
 
 Thorax.Util.bindToRoute = bindToRoute;
-
-if (Thorax.Router) {
-  Thorax.Router.bindToRoute = Thorax.Router.prototype.bindToRoute = bindToRoute;
-}
 
 // Propagates loading view parameters to the AJAX layer
 Thorax.View.prototype._modifyDataObjectOptions = function(dataObject, options) {
@@ -443,10 +470,12 @@ inheritVars.collection.loading = function() {
   }
 };
 
-if (collectionOptionNames) {
-  collectionOptionNames['loading-template'] = 'loadingTemplate';
-  collectionOptionNames['loading-view'] = 'loadingView';
-  collectionOptionNames['loading-placement'] = 'loadingPlacement';
+if (Thorax.CollectionHelperView) {
+  _.extend(Thorax.CollectionHelperView.attributeWhiteList, {
+    'loading-template': 'loadingTemplate',
+    'loading-view': 'loadingView',
+    'loading-placement': 'loadingPlacement'
+  });
 }
 
 Thorax.View.on({

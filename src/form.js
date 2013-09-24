@@ -3,15 +3,20 @@
 inheritVars.model.defaultOptions.populate = true;
 
 var oldModelChange = inheritVars.model.change;
-inheritVars.model.change = function() {
+inheritVars.model.change = function(model, options) {
+  this._isChanging = true;
   oldModelChange.apply(this, arguments);
-  // TODO : What can we do to remove this duplication?
-  var modelOptions = this.model && this._objectOptionsByCid[this.model.cid];
-  if (modelOptions && modelOptions.populate) {
-    this.populate(this.model.attributes, modelOptions.populate === true ? {} : modelOptions.populate);
+  this._isChanging = false;
+
+  if (options && options.serializing) {
+    return;
+  }
+
+  var populate = populateOptions(this);
+  if (this._renderCount && populate) {
+    this.populate(!populate.context && this.model.attributes, populate);
   }
 };
-inheritVars.model.defaultOptions.populate = true;
 
 _.extend(Thorax.View.prototype, {
   //serializes a form present in the view, returning the serialized data
@@ -40,8 +45,7 @@ _.extend(Thorax.View.prototype, {
     options = _.extend({
       set: true,
       validate: true,
-      children: true,
-      silent: true
+      children: true
     }, options || {});
 
     var attributes = options.attributes || {};
@@ -49,10 +53,10 @@ _.extend(Thorax.View.prototype, {
     //callback has context of element
     var view = this;
     var errors = [];
-    eachNamedInput.call(this, options, function() {
-      var value = view._getInputValue(this, options, errors);
+    eachNamedInput(this, options, function(element) {
+      var value = view._getInputValue(element, options, errors);
       if (!_.isUndefined(value)) {
-        objectAndKeyFromAttributesAndName.call(this, attributes, this.name, {mode: 'serialize'}, function(object, key) {
+        objectAndKeyFromAttributesAndName(attributes, element.name, {mode: 'serialize'}, function(object, key) {
           if (!object[key]) {
             object[key] = value;
           } else if (_.isArray(object[key])) {
@@ -64,7 +68,9 @@ _.extend(Thorax.View.prototype, {
       }
     });
 
-    this.trigger('serialize', attributes, options);
+    if (!options._silent) {
+      this.trigger('serialize', attributes, options);
+    }
 
     if (options.validate) {
       var validateInputErrors = this.validateInput(attributes);
@@ -73,13 +79,13 @@ _.extend(Thorax.View.prototype, {
       }
       this.trigger('validate', attributes, errors, options);
       if (errors.length) {
-        this.trigger('error', errors);
+        this.trigger('invalid', errors);
         return;
       }
     }
 
     if (options.set && this.model) {
-      if (!this.model.set(attributes, {silent: options.silent})) {
+      if (!this.model.set(attributes, {silent: options.silent, serializing: true})) {
         return false;
       }
     }
@@ -118,24 +124,28 @@ _.extend(Thorax.View.prototype, {
         attributes = attributes || this._getContext();
 
     //callback has context of element
-    eachNamedInput.call(this, options, function() {
-      objectAndKeyFromAttributesAndName.call(this, attributes, this.name, {mode: 'populate'}, function(object, key) {
+    eachNamedInput(this, options, function(element) {
+      objectAndKeyFromAttributesAndName(attributes, element.name, {mode: 'populate'}, function(object, key) {
         value = object && object[key];
 
         if (!_.isUndefined(value)) {
           //will only execute if we have a name that matches the structure in attributes
-          if (this.type === 'checkbox' && _.isBoolean(value)) {
-            this.checked = value;
-          } else if (this.type === 'checkbox' || this.type === 'radio') {
-            this.checked = value == this.value;
+          var isBinary = element.type === 'checkbox' || element.type === 'radio';
+          if (isBinary && _.isBoolean(value)) {
+            element.checked = value;
+          } else if (isBinary) {
+            element.checked = value == element.value;
           } else {
-            this.value = value;
+            element.value = value;
           }
         }
       });
     });
 
-    this.trigger('populate', attributes);
+    ++this._populateCount;
+    if (!options._silent) {
+      this.trigger('populate', attributes);
+    }
   },
 
   //perform form validation, implemented by child class
@@ -144,7 +154,7 @@ _.extend(Thorax.View.prototype, {
   _getInputValue: function(input /* , options, errors */) {
     if (input.type === 'checkbox' || input.type === 'radio') {
       if (input.checked) {
-        return input.value;
+        return input.getAttribute('value') || true;
       }
     } else if (input.multiple === true) {
       var values = [];
@@ -157,39 +167,83 @@ _.extend(Thorax.View.prototype, {
     } else {
       return input.value;
     }
+  },
+
+  _populateCount: 0
+});
+
+// Keeping state in the views
+Thorax.View.on({
+  'before:rendered': function() {
+    if (!this._renderCount) { return; }
+
+    var modelOptions = this.getObjectOptions(this.model);
+    // When we have previously populated and rendered the view, reuse the user data
+    this.previousFormData = filterObject(
+      this.serialize(_.extend({ set: false, validate: false, _silent: true }, modelOptions)),
+      function(value) { return value !== '' && value != null; }
+    );
+  },
+  rendered: function() {
+    var populate = populateOptions(this);
+
+    if (populate && !this._isChanging && !this._populateCount) {
+      this.populate(!populate.context && this.model.attributes, populate);
+    }
+    if (this.previousFormData) {
+      this.populate(this.previousFormData, _.extend({_silent: true}, populate));
+    }
+
+    this.previousFormData = null;
   }
 });
+
+function filterObject(object, callback) {
+  _.each(object, function (value, key) {
+    if (_.isObject(value)) {
+      return filterObject(value, callback);
+    }
+    if (callback(value, key, object) === false) {
+      delete object[key];
+    }
+  });
+  return object;
+}
 
 Thorax.View.on({
-  error: function() {
-    resetSubmitState.call(this);
-
-    // If we errored with a model we want to reset the content but leave the UI
-    // intact. If the user updates the data and serializes any overwritten data
-    // will be restored.
-    if (this.model && this.model.previousAttributes) {
-      this.model.set(this.model.previousAttributes(), {
-        silent: true
-      });
-    }
-  },
+  invalid: onErrorOrInvalidData,
+  error: onErrorOrInvalidData,
   deactivated: function() {
-    resetSubmitState.call(this);
+    if (this.$el) {
+      resetSubmitState.call(this);
+    }
   }
 });
 
-function eachNamedInput(options, iterator, context) {
-  var i = 0,
-      self = this;
+function onErrorOrInvalidData () {
+  resetSubmitState.call(this);
 
-  this.$('select,input,textarea', options.root || this.el).each(function() {
+  // If we errored with a model we want to reset the content but leave the UI
+  // intact. If the user updates the data and serializes any overwritten data
+  // will be restored.
+  if (this.model && this.model.previousAttributes) {
+    this.model.set(this.model.previousAttributes(), {
+      silent: true
+    });
+  }
+}
+
+function eachNamedInput(view, options, iterator) {
+  var i = 0;
+
+  $('select,input,textarea', options.root || view.el).each(function() {
     if (!options.children) {
-      if (self !== $(this).view({helper: false})) {
+      if (view !== $(this).view({helper: false})) {
         return;
       }
     }
-    if (this.type !== 'button' && this.type !== 'cancel' && this.type !== 'submit' && this.name && this.name !== '') {
-      iterator.call(context || this, i, this);
+    if (this.type !== 'button' && this.type !== 'cancel' && this.type !== 'submit' && this.name) {
+      iterator(this, i);
       ++i;
     }
   });
@@ -208,15 +262,20 @@ function objectAndKeyFromAttributesAndName(attributes, name, options, callback) 
       if (mode === 'serialize') {
         object[key] = {};
       } else {
-        return callback.call(this, false, key);
+        return callback(undefined, key);
       }
     }
     object = object[key];
   }
   key = keys[keys.length - 1].replace(']', '');
-  callback.call(this, object, key);
+  callback(object, key);
 }
 
 function resetSubmitState() {
   this.$('form').removeAttr('data-submit-wait');
+}
+
+function populateOptions(view) {
+  var modelOptions = view.getObjectOptions(view.model) || {};
+  return modelOptions.populate === true ? {} : modelOptions.populate;
 }

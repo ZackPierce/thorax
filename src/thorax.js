@@ -1,4 +1,4 @@
-/*global $server, assignTemplate, createInheritVars, createRegistryWrapper, getValue, inheritVars, resetInheritVars */
+/*global $server, assignTemplate, createInheritVars, createRegistryWrapper, getValue, inheritVars, resetInheritVars, createErrorMessage */
 
 // Provide default behavior for client-failover
 if (typeof $server === 'undefined') {
@@ -26,7 +26,6 @@ if (!Handlebars.templates) {
 }
 
 var Thorax = this.Thorax = {
-  VERSION: '2.0.0rc4',
   templatePathPrefix: '',
   //view classes
   Views: {},
@@ -39,7 +38,7 @@ var Thorax = this.Thorax = {
     throw err;
   },
   //deprecated, here to ensure existing projects aren't mucked with
-  templates: Handlebars.templates 
+  templates: Handlebars.templates
 };
 
 Thorax.View = Backbone.View.extend({
@@ -54,6 +53,8 @@ Thorax.View = Backbone.View.extend({
   },
   _configure: function(options) {
     var self = this;
+
+    this._referenceCount = 0;
 
     this._objectOptionsByCid = {};
     this._boundDataObjectsByCid = {};
@@ -79,6 +80,8 @@ Thorax.View = Backbone.View.extend({
         obj.configure.call(this);
       }
     }, this);
+
+    this.trigger('configure');
   },
 
   setElement : function(element, delegate) {
@@ -93,10 +96,24 @@ Thorax.View = Backbone.View.extend({
   },
 
   _addChild: function(view) {
-    this.children[view.cid] = view;
-    if (!view.parent) {
-      view.parent = this;
+    if (this.children[view.cid]) {
+      return;
     }
+    view.retain();
+    this.children[view.cid] = view;
+    // _helperOptions is used to detect if is HelperView
+    // we do not want to remove child in this case as
+    // we are adding the HelperView to the declaring view
+    // (whatever view used the view helper in it's template)
+    // but it's parent will not equal the declaring view
+    // in the case of a nested helper, which will cause an error.
+    // In either case it's not necessary to ever call
+    // _removeChild on a HelperView as _addChild should only
+    // be called when a HelperView is created.  
+    if (view.parent && view.parent !== this && !view._helperOptions) {
+      view.parent._removeChild(view);
+    }
+    view.parent = this;
     this.trigger('child', view);
     return view;
   },
@@ -104,30 +121,23 @@ Thorax.View = Backbone.View.extend({
   _removeChild: function(view) {
     delete this.children[view.cid];
     view.parent = null;
+    view.release();
     return view;
   },
 
-  destroy: function(options) {
-    options = _.defaults(options || {}, {
-      children: true
-    });
+  _destroy: function(options) {
     _.each(this._boundDataObjectsByCid, this.unbindDataObject, this);
     this.trigger('destroyed');
     delete viewsIndexedByCid[this.cid];
+
     _.each(this.children, function(child) {
       this._removeChild(child);
-      if (options.children) {
-        child.destroy();
-      }
     }, this);
-
-    if (this.parent) {
-      this.parent._removeChild(this);
-    }
 
     if (this.el) {
       this.undelegateEvents();
-      this.remove(); // Will call stopListening()
+      this.remove();  // Will call stopListening()
+      this.off();     // Kills off remaining events
     }
 
     // Absolute worst case scenario, kill off some known fields to minimize the impact
@@ -145,10 +155,12 @@ Thorax.View = Backbone.View.extend({
       // execution. If in a situation where you need to rerender in response to an event that is
       // triggered sync in the rendering lifecycle it's recommended to defer the subsequent render
       // or refactor so that all preconditions are known prior to exec.
-      throw new Error('nested-render');
+      throw new Error(createErrorMessage('nested-render'));
     }
 
-    this._previousHelpers = _.filter(this.children, function(child) { return child._helperOptions; });
+    this._previousHelpers = _.filter(this.children, function(child) {
+      return child._helperOptions;
+    });
 
     var children = {};
     _.each(this.children, function(child, key) {
@@ -158,9 +170,10 @@ Thorax.View = Backbone.View.extend({
     });
     this.children = children;
 
+    this.trigger('before:rendered');
     this._rendering = true;
 
-    try{
+    try {
       if (_.isUndefined(output) || (!_.isElement(output) && !Thorax.Util.is$(output) && !(output && output.el) && !_.isString(output) && !_.isFunction(output))) {
         // try one more time to assign the template, if we don't
         // yet have one we must raise
@@ -171,21 +184,22 @@ Thorax.View = Backbone.View.extend({
       } else if (_.isFunction(output)) {
         output = this.renderTemplate(output);
       }
+
+      // Destroy any helpers that may be lingering
+      _.each(this._previousHelpers, function(child) {
+        this._removeChild(child);
+      }, this);
+      this._previousHelpers = undefined;
+
+      //accept a view, string, Handlebars.SafeString or DOM element
+      this.html((output && output.el) || (output && output.string) || output);
+
+      ++this._renderCount;
+      this.trigger('rendered');
     } finally {
       this._rendering = false;
     }
 
-    // Destroy any helpers that may be lingering
-    _.each(this._previousHelpers, function(child) {
-      child.destroy();
-      child.parent = undefined;
-    });
-    this._previousHelpers = undefined;
-
-    //accept a view, string, Handlebars.SafeString or DOM element
-    this.html((output && output.el) || (output && output.string) || output);
-    ++this._renderCount;
-    this.trigger('rendered');
     return output;
   },
 
@@ -209,15 +223,6 @@ Thorax.View = Backbone.View.extend({
     };
   },
 
-  _getHelpers: function() {
-    if (this.helpers) {
-      return _.extend({}, Handlebars.helpers, this.helpers);
-    } else {
-      return Handlebars.helpers;
-    }
-
-  },
-
   renderTemplate: function(file, context, ignoreErrors) {
     var template;
     context = context || this._getContext();
@@ -230,7 +235,7 @@ Thorax.View = Backbone.View.extend({
       return '';
     } else {
       return template(context, {
-        helpers: this._getHelpers(),
+        helpers: this.helpers,
         data: this._getData(context)
       });
     }
@@ -238,6 +243,15 @@ Thorax.View = Backbone.View.extend({
 
   ensureRendered: function() {
     !this._renderCount && this.render();
+  },
+  shouldRender: function(flag) {
+    // Render if flag is truthy or if we have already rendered and flag is undefined/null
+    return flag || (flag == null && this._renderCount);
+  },
+  conditionalRender: function(flag) {
+    if (this.shouldRender(flag)) {
+      this.render();
+    }
   },
 
   appendTo: function(el) {
@@ -255,6 +269,21 @@ Thorax.View = Backbone.View.extend({
       var element = this._replaceHTML(html);
       this.trigger('append');
       return element;
+    }
+  },
+
+  release: function() {
+    --this._referenceCount;
+    if (this._referenceCount <= 0) {
+      this._destroy();
+    }
+  },
+
+  retain: function(owner) {
+    ++this._referenceCount;
+    if (owner) {
+      // Not using listenTo helper as we want to run once the owner is destroyed
+      this.listenTo(owner, 'destroyed', owner.release);
     }
   },
 

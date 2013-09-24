@@ -1,12 +1,20 @@
 describe('form', function() {
-  it("serialize() / populate()", function() {
-    var FormView = Thorax.View.extend({
-      name: 'form',
-      template: function() {
-        return '<form><input name="one"/><select name="two"><option value="a">a</option><option value="b">b</option></select><input name="three[four]"/><input name="five" value="A" type="checkbox" /><input name="five" value="B" type="checkbox" checked /><input name="five" value="C" type="checkbox" checked /><input name="six" value="LOL" type="checkbox" checked /></form>';
-      }
-    });
+  var FormView = Thorax.View.extend({
+    name: 'form',
+    template: function() {
+      return '<form>'
+          + '<input name="one"/>'
+          + '<select name="two"><option value="a">a</option><option value="b">b</option></select>'
+          + '<input name="three[four]">'
+          + '<input name="five" value="A" type="checkbox">'
+          + '<input name="five" value="B" type="checkbox" checked>'
+          + '<input name="five" value="C" type="checkbox" checked>'
+          + '<input name="six" value="LOL" type="checkbox" checked>'
+        + '</form>';
+    }
+  });
 
+  it('serialize() / populate()', function() {
     var model = new Thorax.Model({
       one: 'a',
       two: 'b',
@@ -44,15 +52,15 @@ describe('form', function() {
     view.validateInput = function() {
       return ['error'];
     };
-    var errorCallbackCallCount = 0;
-    view.on('error', function() {
-      ++errorCallbackCallCount;
+    var invalidCallbackCallCount = 0;
+    view.on('invalid', function() {
+      ++invalidCallbackCallCount;
     });
     expect(view.serialize()).to.be.undefined;
-    expect(errorCallbackCallCount).to.equal(1, "error event triggered when validateInput returned errors");
+    expect(invalidCallbackCallCount).to.equal(1, 'invalid event triggered when validateInput returned errors');
   });
 
-  it("nested serialize / populate", function() {
+  it('nested serialize / populate', function() {
     //the test has a child view and a mock helper view fragment
     //the child view should act as a child view, the view fragment
     //should act as a part of the parent view
@@ -113,5 +121,138 @@ describe('form', function() {
     expect(view.serialize({
       children: false
     }).childKey).to.equal('childValue');
+  });
+
+  it('should populate on initial render', function() {
+    var attributes = {
+      one: 'a',
+      two: 'b',
+      three: {
+        four: 'c'
+      }
+    };
+    var model = new Thorax.Model(attributes);
+
+    var view = new FormView();
+    view.setModel(model);
+    expect(view._renderCount).to.equal(0);
+    expect(view._populateCount).to.equal(0);
+    expect(view.serialize()).to.eql({});
+
+    view.render();
+    expect(_.pick(view.serialize(), _.keys(attributes))).to.eql(attributes);
+  });
+
+  it('keep state on rerender', function() {
+    var FormView = Thorax.View.extend({
+      name: 'form',
+      template: function() {
+        return '<form><input name="test"><input name="nested[test]"><input name="merge"></form>';
+      }
+    });
+
+    var model = new Thorax.Model({
+      test: 'fail',
+      nested: {
+        test: 'fail'
+      }
+    });
+
+    var view = new FormView();
+
+    var populateSpy = this.spy(),
+        serializeSpy = this.spy();
+
+    // Set spies to make sure the event aren't firing
+    view.on('populate', populateSpy);
+    view.on('serialize', serializeSpy);
+
+    view.render();
+    view.setModel(model); // Triggers first data population
+
+    // Expect the populate event to have fired once
+    expect(populateSpy.callCount).to.equal(1);
+    expect(serializeSpy.callCount).to.equal(0);
+
+    model.set('merge', 'test-merge'); // Set model data in between to test the merge
+    expect(populateSpy.callCount).to.equal(2);
+
+    view.$('input[name="test"]').val('test');
+    view.$('input[name="nested[test]"]').val('test-nested');
+    view.render(); // Should trigger another data population with user data
+
+    // Expect the user input to persist
+    expect(view.$('input[name="merge"]')[0].value).to.equal('test-merge');
+    expect(view.$('input[name="test"]')[0].value).to.equal('test');
+    expect(view.$('input[name="nested[test]"]')[0].value).to.equal('test-nested');
+
+    // Expect the events to not have fired
+    expect(populateSpy.callCount).to.equal(2);
+    expect(serializeSpy.callCount).to.equal(0);
+  });
+
+  it('should not populate missing fields', function() {
+    var FormView = Thorax.View.extend({
+      name: 'form',
+      template: function() {
+        return '<form><input name="test"><input name="nested[test]"><input name="merge"></form>';
+      }
+    });
+
+    var model = new Thorax.Model({});
+
+    var view = new FormView();
+    view.setModel(model);
+    view.render();
+
+    // Expect the user input to persist
+    expect(view.$('input[name="nested[test]"]')[0].value).to.equal('');
+  });
+
+  it('works when calling render before binding the model', function() {
+    var FormView = Thorax.View.extend({
+      name: 'form',
+      template: function() {
+        return '<form><input name="test"></form>';
+      },
+
+      initialize: function() {
+        this.render();
+      }
+    });
+    var view = new FormView({model: new Thorax.Model({test: 'test'})});
+    expect(view.$('input[name="test"]')[0].value).to.equal('test');
+  });
+
+  it('should populate on model change', function() {
+    var view = new FormView(),
+        model = new Thorax.Model();
+
+    view.setModel(model);
+    view.render();
+    expect(view.$('input[name="one"]')[0].value).to.equal('');
+
+    model.set('one', 'foo');
+    expect(view.$('input[name="one"]')[0].value).to.equal('foo');
+  });
+
+  it('should serialize checkboxes without values', function() {
+    var view = new FormView({
+      template: function() {
+        return '<input type="checkbox" name="foo">';
+      }
+    });
+
+    var model = new Thorax.Model({});
+    view.setModel(model);
+    view.render();
+
+    expect(view.serialize()).to.eql({});
+
+    model.set('foo', true);
+    expect(view.serialize()).to.eql({foo: true});
+
+    view.render();
+    expect(view.serialize()).to.eql({foo: true});
   });
 });

@@ -1,7 +1,140 @@
+/*global runCollectionTests*/
 describe('collection helper', function() {
   it('should have access to handlebars noop', function() {
     // Explicit verification that Handlebars is exposing this field.
     expect(Handlebars.VM.noop).to.exist;
+  });
+
+  it('should allow use of expand-tokens', function() {
+    var view = new Thorax.View({
+      key: 'value',
+      template: Handlebars.compile('{{#collection class="{{key}}" expand-tokens=true}}{{/collection}}'),
+      collection: new Thorax.Collection([{a: 'a'}])
+    });
+    view.render();
+    expect(view.$('div.value').length).to.equal(1);
+  });
+  
+  it('should allow arbitrary html attributes', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{#collection random="value"}}{{/collection}}'),
+      collection: new Thorax.Collection([{a: 'a'}])
+    });
+    view.render();
+    expect(view.$('div[random="value"]').length).to.equal(1);
+  });
+
+  it('should allow name attribute', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{#collection tag="select" name="select" class="test-class"}}<option value="{{id}}">{{id}}</option>{{/collection}}'),
+      collection: new Thorax.Collection([{
+        id: 1
+      }, {
+        id: 2
+      }])
+    });
+    view.render();
+    expect(view.$('select').attr('name')).to.equal('select');
+    expect(view.$('select').attr('class')).to.equal('test-class');
+  });
+  
+  it('should render block', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{#collection tag="ul" empty-template="letter-empty"}}<li>{{letter}}</li>{{/collection}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it('should render item-view', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{collection tag="ul" empty-template="letter-empty" item-view="letter-item"}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it('should render with item-view and block', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{#collection tag="ul" empty-template="letter-empty" item-view="letter-item"}}<li class="testing">{{letter}}</li>{{/collection}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it('should render with item-template', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{collection tag="ul" empty-view="letter-empty" item-template="letter-item"}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it('shoud accept item-context as argument', function() {
+    var view = new Thorax.View({
+      a: new Thorax.Collection([{key: 'value'}]),
+      b: new Thorax.Collection([{key: 'value'}]),
+      itemContextA: function() {
+        return {
+          one: 'one' + this.exclamation
+        };
+      },
+      itemContextB: function() {
+        return {
+          two: 'two' + this.exclamation
+        };
+      },
+      // ensures is called with correct context
+      exclamation: '!',
+      template: Handlebars.compile('{{#collection a tag="ul" item-context="itemContextA"}}<li>{{one}}</li>{{/collection}}{{#collection b item-context=itemContextB tag="ul"}}<li>{{two}}</li>{{/collection}}')
+    });
+    view.render();
+    expect(view.$('ul:first-child li').html()).to.equal('one!');
+    expect(view.$('ul:last-child li').html()).to.equal('two!');
+  });
+
+  it('should accept item-filter as argument', function() {
+    var view = new Thorax.View({
+      a: new Thorax.Collection([{key: 'value'}]),
+      b: new Thorax.Collection([{key: 'value'}]),
+      itemFilterA: function() {
+        return true;
+      },
+      itemFilterB: function() {
+        return false;
+      },
+      template: Handlebars.compile('{{#collection a tag="ul" item-filter="itemFilterA"}}<li>{{one}}</li>{{/collection}}{{#collection b item-filter=itemFilterB tag="ul"}}<li>{{two}}</li>{{/collection}}')
+    });
+    view.render();
+    expect(view.$('ul:first-child li')[0].style.display).to.not.equal('none');
+    expect(view.$('ul:last-child li')[0].style.display).to.equal('none');
+  });
+
+  it('should item-view and item-template', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{collection tag="ul" empty-view="letter-empty" item-view="letter-item" item-template="letter-item"}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it('should render with empty-view and empty-template', function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{collection tag="ul" empty-template="letter-empty" empty-view="letter-empty" item-template="letter-item"}}')
+    });
+    runCollectionTests(view);
+  });
+
+  it("graceful failure of empty collection with no empty template", function() {
+    var view = new Thorax.View({
+      template: Handlebars.compile('{{collection item-template="letter-item"}}'),
+      collection: new Thorax.Collection({
+        isPopulated: function() {
+          return true;
+        }
+      })
+    });
+    view.render();
+    view = new Thorax.View({
+      template: Handlebars.compile('{{collection item-template="letter-item"}}'),
+      collection: new Thorax.Collection()
+    });
+    view.render();
   });
 
   it("transition from no collection to collection", function() {
@@ -20,6 +153,37 @@ describe('collection helper', function() {
     expect(view.$('li').length).to.equal(1);
     view.setCollection(false);
     expect(view.$('li').length).to.equal(0);
+  });
+
+  it("should auto assign item-view and empty-view if available", function() {
+    Thorax.View.extend({
+      name: "auto-assign-item",
+      template: Handlebars.compile('<li>{{key}}</li>')
+    });
+    Thorax.View.extend({
+      name: "auto-assign-empty",
+      template: Handlebars.compile('<li>empty</li>')
+    });
+
+    var autoAssignView = new Thorax.CollectionView({
+      name: 'auto-assign',
+      tagName: 'ul',
+      collection: new Thorax.Collection([])
+    });
+    autoAssignView.render();
+    expect(autoAssignView.$('li').html()).to.equal('empty');
+    autoAssignView.collection.add({key: 'value'});
+    expect(autoAssignView.$('li').html()).to.equal('value');
+
+    var autoAssignViewWithHelper = new Thorax.View({
+      name: 'auto-assign',
+      template: Handlebars.compile('{{collection tag="ul"}}'),
+      collection: new Thorax.Collection([])
+    });
+    autoAssignViewWithHelper.render();
+    expect(autoAssignViewWithHelper.$('li').html()).to.equal('empty');
+    autoAssignViewWithHelper.collection.add({key: 'value'});
+    expect(autoAssignViewWithHelper.$('li').html()).to.equal('value');
   });
 
   it("collection-element declared outside of CollectionView will raise", function() {
@@ -66,7 +230,7 @@ describe('collection helper', function() {
   it("nested collection helper", function() {
     function testNesting(view, msg) {
       var blogModel = new Thorax.Model();
-      view.setModel(blogModel);
+      view.setModel(blogModel, {render: true});
       expect(view.html()).to.equal('empty', msg + ' : starts empty');
       var authors = [
         new Thorax.Model({author: 'author 1'}),
@@ -130,7 +294,14 @@ describe('collection helper', function() {
       template: Handlebars.compile('{{#collection comments}}<p>{{comment}}</p>{{#collection authors}}<span>{{author}}</span>{{/collection}}{{/collection}}')
     });
     var view = new Thorax.View({
-      template: Handlebars.compile('{{#empty posts}}empty{{else}}{{#collection posts name="outer"}}<h2>{{title}}</h2>{{view "comments" comments=comments}}</div>{{/collection}}{{/empty}}')
+      postsContext: function(model) {
+        return _.extend({}, model.attributes, {
+          comments: new Thorax.Views['comments']({
+            comments: model.get('comments')
+          })
+        });
+      },
+      template: Handlebars.compile('{{#empty posts}}empty{{else}}{{#collection posts name="outer" item-context="postsContext"}}<h2>{{title}}</h2>{{view comments}}</div>{{/collection}}{{/empty}}')
     });
     testNesting(view, 'nested view');
 
@@ -147,7 +318,11 @@ describe('collection helper', function() {
     beforeEach(function() {
       spy = this.spy();
       view = new Thorax.View({
-        template: Handlebars.compile('{{#collection}}<span>{{test}}</span>{{/collection}}')
+        template: Handlebars.compile('{{#collection}}<span>{{test}}</span>{{/collection}}'),
+        _modifyDataObjectOptions: function(dataObject, options) {
+          options.render = true;
+          return options;
+        }
       });
     });
 
@@ -197,12 +372,36 @@ describe('collection helper', function() {
           .to.have.been.calledOn(view)
           .to.have.been.calledWith(view.collection.models[0]);
     });
-    it('should not destroy views rendered with renderItem on change', function() {
+    it('should delegate to #renderItem with a named parent and no inline template', function() {
+      view.name = 'foo';
+      view.template = Handlebars.compile('{{collection}}');
+
+      view.renderItem = spy;
+      view.setCollection(new Thorax.Collection([{id: 1}]));
+
+      expect(view.renderItem)
+          .to.have.been.calledOnce
+          .to.have.been.calledOn(view)
+          .to.have.been.calledWith(view.collection.models[0]);
+    });
+    it('should delegate to #renderEmpty with a named parent and no inline template', function() {
+      view.name = 'foo';
+      view.template = Handlebars.compile('{{collection}}');
+
+      view.renderItem = function() {};
+      view.renderEmpty = spy;
+      view.setCollection(new Thorax.Collection([]));
+
+      expect(view.renderEmpty)
+          .to.have.been.calledOnce
+          .to.have.been.calledOn(view);
+    });
+    it('should not release views rendered with renderItem on change', function() {
       var child = new (Thorax.View.extend({
-        destroy: function() { throw new Error('Destroy'); },
+        release: function() { throw new Error('Release'); },
 
         template: function() { return '<div>foo</div>'; }
-      }));
+      }))();
       child.ensureRendered();
 
       view.renderItem = this.spy(function() {

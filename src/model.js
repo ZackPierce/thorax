@@ -1,4 +1,4 @@
-/*global createRegistryWrapper, dataObject, getValue */
+/*global createRegistryWrapper, dataObject, getValue, inheritVars */
 var modelCidAttributeName = 'data-model-cid';
 
 Thorax.Model = Backbone.Model.extend({
@@ -37,33 +37,39 @@ createRegistryWrapper(Thorax.Model, Thorax.Models);
 dataObject('model', {
   set: 'setModel',
   defaultOptions: {
-    render: true,
+    render: undefined,    // Default to deferred rendering
     fetch: true,
     success: false,
-    errors: true
+    invalid: true
   },
   change: onModelChange,
   $el: '$el',
   cidAttrName: modelCidAttributeName
 });
 
-function onModelChange(model) {
-  var modelOptions = model && this._objectOptionsByCid[model.cid];
-  // !modelOptions will be true when setModel(false) is called
-  if (!modelOptions || (modelOptions && modelOptions.render)) {
-    this.render();
+function onModelChange(model, options) {
+  if (options && options.serializing) {
+    return;
   }
+
+  var modelOptions = this.getObjectOptions(model) || {};
+  // !modelOptions will be true when setModel(false) is called
+  this.conditionalRender(modelOptions.render);
 }
 
 Thorax.View.on({
   model: {
-    error: function(model, errors) {
-      if (this._objectOptionsByCid[model.cid].errors) {
-        this.trigger('error', errors, model);
+    invalid: function(model, errors) {
+      if (this.getObjectOptions(model).invalid) {
+        this.trigger('invalid', errors, model);
       }
     },
-    change: function(model) {
-      onModelChange.call(this, model);
+    error: function(model, resp, options) {
+      this.trigger('error', resp, model);
+    },
+    change: function(model, options) {
+      // Indirect refernece to allow for overrides
+      inheritVars.model.change.call(this, model, options);
     }
   }
 });
